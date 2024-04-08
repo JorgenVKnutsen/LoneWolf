@@ -7,6 +7,8 @@ sys.path.append(rel_do_mpc_path)
 import do_mpc
 from casadi import *
 
+import time
+
 
 
 class MPC_Controller:
@@ -16,14 +18,30 @@ class MPC_Controller:
         self.OMEGA = 1
         self.MASS = 375
         self.L = 2
-        self.ENGINEBREAKS = 50
+        self.ENGINEBREAKS = 100
+
+
+        #States for state-estimator
+        self.F_state = 0
+        self.delta_state = 0
+        self.delta_dot_state = 0
+        self.u_1_state = 0
+        self.u_2_state = 0
+
+        self.physical_states = [0,0,0,0]
+
 
         #MPC Setup
-
         self.PREDICTION_HORIZON = 50
         self.T_STEPS = 0.1
         self.ROBUST = 1
-        self.STORE_SOLUTION = True
+        self.STORE_SOLUTION = False
+
+        # Solver parametere
+        self.MAX_ITERATIONS = 10000
+        self.ABS_TOL = 1e-6
+        self.MAX_TIME = 0.07 # Dette holder oss innenfor 0.1 sekunder
+
 
         model_type = 'continuous' # either 'discrete' or 'continuous'
         model = do_mpc.model.Model(model_type)
@@ -40,6 +58,7 @@ class MPC_Controller:
         F = model.set_variable(var_type='_x', var_name='F', shape=(1,1))
         delta = model.set_variable(var_type='_x', var_name='delta', shape=(1,1))
         delta_dot = model.set_variable(var_type='_x', var_name='delta_dot', shape=(1,1))
+
 
 
         #Setting reference variables
@@ -103,7 +122,15 @@ class MPC_Controller:
             'n_robust': self.ROBUST,
             'store_full_solution': self.STORE_SOLUTION,
         }
-        self.mpc.set_param(**setup_mpc)
+        solver_options = {
+            'ipopt.max_iter': self.MAX_ITERATIONS,   # Maximum number of iterations for IPOPT
+            'ipopt.tol': self.ABS_TOL,        # Solver tolerance for IPOPT
+            'ipopt.max_cpu_time': self.MAX_TIME # Maximum CPU time limit in seconds for IPOPT
+        }
+
+        combined_params = {**setup_mpc, 'nlpsol_opts': solver_options}
+        self.mpc.set_param(**combined_params)
+
 
         #Tuning parameters
 
@@ -206,10 +233,41 @@ class MPC_Controller:
         self.mpc.x0 = x0_
         self.mpc.set_initial_guess()
 
-    def predict_step(self, states):
-        x, y, psi, v, F, delta, delta_dot = [states[0], states[1], states[2], states[3], states[4], states[5], states[6]]
-        x0_ = np.array([x, y, psi, v, F, delta, delta_dot])
+        self.previous_time = time.time()
+
+
+
+    #This function is a helper-function that takes in the 4 measured states, and updating with 
+    def state_estimator(self, physical_states):
+        print("state estimator")
+        x, y, psi, v = physical_states
+        print("1")
+        dt = time.time() - self.previous_time
+        print("2")
+        self.F_state += dt *( 1/self.TAU * (-self.F_state + self.u_1_state) - self.ENGINEBREAKS*v)
+        print("3")
+        self.delta_state += dt*(self.delta_dot_state)
+        print("4")
+        self.delta_dot_state += dt*(-2*self.ZETA*self.OMEGA * self.delta_dot_state - self.OMEGA**2 * self.delta_state + self.u_2_state )
+        print("5")
+        self.previous_time = time.time()
+
+        print("1")
+        return [x, y, psi, v, self.F_state, self.delta_state, self.delta_dot_state]
+
+
+
+
+    def predict_step(self, physical_states):
+        print("predictor")
+        x0_temp = self.state_estimator(physical_states)
+        print("kom du deg hit??????")
+        print(x0_temp)
+        x0_ = np.array(x0_temp)
+        
         u = self.mpc.make_step(x0_)
+        self.u_1_state = float(u[0])
+        self.u_2_state = float(u[1])
         return [u[0], u[1]]
 
         
